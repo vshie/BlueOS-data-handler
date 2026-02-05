@@ -1,0 +1,903 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BlueOS Data Handler</title>
+  <link href="https://fonts.googleapis.com/css?family=Roboto:100,300,400,500,700,900" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/@mdi/font@6.x/css/materialdesignicons.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/vuetify@2.x/dist/vuetify.min.css" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/vue@2.x/dist/vue.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vuetify@2.x/dist/vuetify.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+  <style>
+    [v-cloak] { display: none; }
+    html { overflow-y: auto; }
+    .mono { font-family: 'Roboto Mono', monospace; font-size: 13px; }
+
+    .serial-console {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 12px;
+      max-height: 320px;
+      overflow-y: auto;
+      font-family: 'Roboto Mono', monospace;
+      font-size: 12px;
+      line-height: 1.7;
+    }
+    .serial-line { white-space: pre-wrap; word-break: break-all; }
+    .serial-line .ts { color: #484f58; margin-right: 8px; user-select: none; }
+    .serial-line .raw { color: #8b949e; }
+    .field-span { border-radius: 3px; padding: 0 2px; font-weight: 500; }
+
+    .field-config-table th { white-space: nowrap; }
+    .field-config-table td { vertical-align: middle !important; }
+
+    .value-tile {
+      background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
+      padding: 12px 16px; text-align: center; min-width: 110px;
+    }
+    .value-tile .label {
+      font-size: 11px; color: #8b949e; text-transform: uppercase;
+      letter-spacing: 0.5px; margin-bottom: 4px; white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis;
+    }
+    .value-tile .val { font-size: 22px; font-weight: 500; font-family: 'Roboto Mono', monospace; }
+    .value-tile .targets { margin-top: 4px; font-size: 10px; color: #484f58; }
+
+    .v-input--switch .v-input__slot { margin-bottom: 0 !important; }
+
+    /* Name input red border when at limit */
+    .name-at-limit .v-input__slot { border-color: #ff9800 !important; }
+  </style>
+</head>
+<body>
+  <div id="app" v-cloak>
+    <v-app>
+      <v-app-bar app dark color="#1565C0" elevation="2" dense>
+        <v-icon left class="mr-2">mdi-swap-horizontal-bold</v-icon>
+        <v-toolbar-title class="subtitle-1 font-weight-medium">BlueOS Data Handler</v-toolbar-title>
+        <v-spacer></v-spacer>
+        <v-chip small :color="status.serial_connected ? 'green' : 'red'" text-color="white" class="mr-2">
+          <v-icon left small>{{ status.serial_connected ? 'mdi-serial-port' : 'mdi-alert-circle' }}</v-icon>
+          {{ status.serial_connected ? status.serial_port : 'Disconnected' }}
+        </v-chip>
+        <v-chip small color="blue-grey darken-1" text-color="white" v-if="status.ws_clients > 0">
+          <v-icon left small>mdi-websocket</v-icon> {{ status.ws_clients }} WS
+        </v-chip>
+      </v-app-bar>
+
+      <v-main>
+        <v-container fluid class="pa-4">
+          <v-tabs v-model="activeTab" background-color="transparent" grow class="mb-2">
+            <v-tab><v-icon left small>mdi-monitor-dashboard</v-icon> Data &amp; Fields</v-tab>
+            <v-tab><v-icon left small>mdi-cog</v-icon> Connection</v-tab>
+            <v-tab><v-icon left small>mdi-file-document</v-icon> Logs</v-tab>
+          </v-tabs>
+
+          <v-tabs-items v-model="activeTab">
+
+            <!-- ============================================================ -->
+            <!-- TAB 1: DATA & FIELDS                                         -->
+            <!-- ============================================================ -->
+            <v-tab-item>
+              <!-- Live value tiles -->
+              <div class="d-flex flex-wrap mt-4" style="gap: 10px;" v-if="cfg.fields.length > 0 && !cfg.raw_mode">
+                <div class="value-tile" v-for="f in cfg.fields" :key="'tile-'+f.variable_name"
+                     :style="{ borderColor: fieldColor(f) + '44' }">
+                  <div class="label" :title="f.variable_name">{{ f.variable_name || '(unnamed)' }}</div>
+                  <div class="val" :style="{ color: fieldColor(f) }">
+                    {{ liveValue(f) !== null ? liveValue(f) : '—' }}
+                  </div>
+                  <div class="targets">
+                    <span v-if="f.send_mavlink && cfg.send_mavlink" style="color:#66bb6a;" title="Mavlink2Rest">MAV</span>
+                    <span v-if="f.send_mavlink && cfg.send_mavlink && f.send_cockpit && cfg.send_cockpit"> · </span>
+                    <span v-if="f.send_cockpit && cfg.send_cockpit" style="color:#42a5f5;" title="Cockpit WS">WS</span>
+                    <span v-if="!(f.send_mavlink && cfg.send_mavlink) && !(f.send_cockpit && cfg.send_cockpit)" style="color:#616161;">off</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Serial console -->
+              <v-card dark class="mt-4">
+                <v-card-title class="py-2">
+                  <v-icon left small>mdi-console</v-icon>
+                  <span class="subtitle-2">Incoming Data Stream</span>
+                  <v-spacer></v-spacer>
+                  <v-btn icon x-small @click="clearConsole" title="Clear"><v-icon x-small>mdi-delete</v-icon></v-btn>
+                  <v-switch v-model="autoScroll" label="Auto-scroll" dense hide-details class="ml-3 mt-0 pt-0" style="flex:none;"></v-switch>
+                </v-card-title>
+                <v-card-text class="pt-0">
+                  <div class="serial-console" ref="console">
+                    <div v-for="(line, idx) in consoleLines" :key="idx" class="serial-line">
+                      <span class="ts">{{ line.ts }}</span><span v-html="highlightLine(line.text)"></span>
+                    </div>
+                    <div v-if="consoleLines.length === 0" class="text-center pa-6" style="color: #484f58;">
+                      Waiting for serial data&hellip;
+                    </div>
+                  </div>
+                </v-card-text>
+              </v-card>
+
+              <!-- Field configuration -->
+              <v-card dark class="mt-4">
+                <v-card-title class="py-2">
+                  <v-icon left small>mdi-table-edit</v-icon>
+                  <span class="subtitle-2">Field Configuration</span>
+                  <v-spacer></v-spacer>
+                  <v-switch v-model="cfg.raw_mode" label="Raw mode" dense hide-details class="mt-0 pt-0 mr-4" style="flex:none;" color="orange"></v-switch>
+                </v-card-title>
+                <v-card-text class="pt-0" v-if="!cfg.raw_mode">
+
+                  <!-- Separator row -->
+                  <v-row dense class="mb-2 align-center">
+                    <v-col cols="auto">
+                      <v-text-field v-model="cfg.field_separator" label="Field Separator" outlined dense hide-details
+                        style="max-width: 120px;" class="mono" placeholder=","
+                        hint="Splits the line into chunks" persistent-hint></v-text-field>
+                    </v-col>
+                    <v-col cols="auto">
+                      <v-text-field v-model="cfg.kv_separator" label="Name/Value Sep" outlined dense hide-details
+                        style="max-width: 120px;" class="mono" placeholder="(blank = positional)"
+                        hint="Blank = positional column mode" persistent-hint clearable></v-text-field>
+                    </v-col>
+                    <v-col cols="auto">
+                      <v-btn small color="blue-grey" @click="detectSeparator" :loading="detectingSeperator">
+                        <v-icon left small>mdi-auto-fix</v-icon> Detect
+                      </v-btn>
+                    </v-col>
+                    <v-col cols="auto">
+                      <v-btn small color="green" @click="autoDetectFields" :disabled="consoleLines.length === 0">
+                        <v-icon left small>mdi-auto-fix</v-icon> Auto-detect Fields
+                      </v-btn>
+                    </v-col>
+                    <v-col cols="auto">
+                      <v-btn small outlined @click="addField">
+                        <v-icon left small>mdi-plus</v-icon> Add Field
+                      </v-btn>
+                    </v-col>
+                  </v-row>
+
+                  <!-- Mode indicator -->
+                  <v-chip small label class="mb-3" :color="parseMode === 'positional' ? 'blue-grey' : 'teal'" text-color="white">
+                    <v-icon left x-small>{{ parseMode === 'positional' ? 'mdi-numeric' : 'mdi-tag-text' }}</v-icon>
+                    {{ parseMode === 'positional' ? 'Positional mode' : parseMode === 'alternating' ? 'Alternating pairs (name' + cfg.field_separator + 'value' + cfg.field_separator + '...)' : 'Key' + cfg.kv_separator + 'Value mode' }}
+                  </v-chip>
+
+                  <!-- Detection results -->
+                  <v-alert v-if="sepDetectResult" :type="sepDetectResult.success ? 'success' : 'warning'" text dense dismissible class="mb-3">
+                    <span v-if="sepDetectResult.success">
+                      Pattern: <strong>{{ sepDetectResult.pattern }}</strong>
+                      &mdash; field separator: <code>{{ sepDetectResult.field_separator_display }}</code>
+                      <span v-if="sepDetectResult.kv_separator">, name/value separator: <code>{{ sepDetectResult.kv_separator }}</code></span>
+                    </span>
+                    <span v-else>{{ sepDetectResult.message }}</span>
+                  </v-alert>
+
+                  <!-- Field table -->
+                  <v-simple-table v-if="cfg.fields.length > 0" dark dense class="field-config-table">
+                    <thead>
+                      <tr>
+                        <th v-if="parseMode === 'positional'" style="width:60px;">Col #</th>
+                        <th v-if="parseMode !== 'positional'" style="width:140px;">Source Label</th>
+                        <th>Variable Name <span style="color:#ff9800;font-weight:normal;font-size:11px;">(max 10 chars &mdash; used for MAV + WS + CSV)</span></th>
+                        <th style="width:110px;">Type</th>
+                        <th style="width:50px;" title="Send to Mavlink2Rest">MAV</th>
+                        <th style="width:50px;" title="Send to Cockpit WebSocket">WS</th>
+                        <th style="width:90px;">Live</th>
+                        <th style="width:36px;"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(f, fi) in cfg.fields" :key="fi">
+                        <!-- Positional: column index -->
+                        <td v-if="parseMode === 'positional'">
+                          <v-text-field v-model.number="f.index" type="number" min="0" dense hide-details
+                            outlined class="mono" style="max-width: 60px;"></v-text-field>
+                        </td>
+                        <!-- Named (kv or alternating): source label -->
+                        <td v-if="parseMode !== 'positional'">
+                          <v-text-field v-model="f.source_key" dense hide-details outlined
+                            placeholder="e.g. temp" class="mono" style="max-width: 140px;"></v-text-field>
+                        </td>
+                        <!-- Variable name (output name, shared by MAV + WS + CSV) -->
+                        <td>
+                          <v-text-field
+                            v-model="f.variable_name"
+                            dense hide-details outlined
+                            placeholder="e.g. DO_temp"
+                            class="mono"
+                            maxlength="10"
+                            counter="10"
+                            :class="{ 'name-at-limit': f.variable_name.length >= 10 }"
+                            @input="enforceNameLimit(fi)"
+                          >
+                            <template v-slot:prepend-inner>
+                              <div style="width:12px;height:12px;border-radius:3px;margin-top:2px;"
+                                   :style="{background: fieldColor(f)}"></div>
+                            </template>
+                            <template v-slot:append>
+                              <span class="caption" :style="{color: f.variable_name.length >= 10 ? '#ff9800' : '#616161'}">
+                                {{ f.variable_name.length }}/10
+                              </span>
+                            </template>
+                          </v-text-field>
+                        </td>
+                        <td>
+                          <v-select v-model="f.type" :items="['number','string']" dense hide-details outlined
+                            @change="onTypeChange(f)"></v-select>
+                        </td>
+                        <td class="text-center">
+                          <v-simple-checkbox v-model="f.send_mavlink" color="green"
+                            :disabled="f.type !== 'number'"
+                            :title="f.type !== 'number' ? 'Only numeric fields can be sent via Mavlink' : ''"></v-simple-checkbox>
+                        </td>
+                        <td class="text-center">
+                          <v-simple-checkbox v-model="f.send_cockpit" color="blue"></v-simple-checkbox>
+                        </td>
+                        <td class="mono text-center" :style="{ color: fieldColor(f) }">
+                          {{ liveValue(f) !== null ? liveValue(f) : '—' }}
+                        </td>
+                        <td>
+                          <v-btn icon x-small color="red" @click="removeField(fi)">
+                            <v-icon x-small>mdi-close</v-icon>
+                          </v-btn>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </v-simple-table>
+
+                  <v-alert v-else type="info" text dense class="mt-2">
+                    No fields defined. Click <strong>Auto-detect Fields</strong> to create fields from incoming data,
+                    or <strong>Add Field</strong> to define them manually.
+                  </v-alert>
+                </v-card-text>
+
+                <v-card-text v-else>
+                  <v-alert type="info" text dense>
+                    Raw mode sends the entire serial line as <code>serial-raw</code> to the Cockpit data-lake.
+                    Mavlink is not used in raw mode.
+                  </v-alert>
+                </v-card-text>
+
+                <v-card-actions>
+                  <v-spacer></v-spacer>
+                  <v-btn color="primary" @click="saveConfig" :loading="saving">
+                    <v-icon left>mdi-content-save</v-icon> Apply &amp; Save
+                  </v-btn>
+                </v-card-actions>
+              </v-card>
+
+              <!-- How naming works -->
+              <v-expansion-panels flat class="mt-3">
+                <v-expansion-panel>
+                  <v-expansion-panel-header class="subtitle-2">
+                    <v-icon left small class="mr-2">mdi-help-circle-outline</v-icon> How does it work?
+                  </v-expansion-panel-header>
+                  <v-expansion-panel-content class="body-2">
+                    <p><strong>Parsing is driven by two separator fields:</strong></p>
+                    <ul class="mb-3">
+                      <li><strong>Field Separator</strong> &mdash; splits the line into chunks (e.g. <code>,</code> or <code>:</code>).</li>
+                      <li><strong>Name/Value Separator</strong> &mdash; splits name from value <em>within</em> each chunk (e.g. <code>=</code> or <code>:</code>). Leave blank for positional mode.</li>
+                    </ul>
+                    <p><strong>Three resulting modes:</strong></p>
+                    <ul class="mb-3">
+                      <li><strong>Positional</strong> (Name/Value Sep blank) &mdash; <code>23.5,8.1,0.95</code> &mdash; column index maps to a variable name.</li>
+                      <li><strong>Key=Value</strong> (Name/Value Sep &ne; Field Sep) &mdash; <code>DO=8:salinity=34</code> (field sep <code>:</code>, name/val sep <code>=</code>) &mdash; source label maps to a variable name.</li>
+                      <li><strong>Alternating pairs</strong> (Name/Value Sep = Field Sep) &mdash; <code>ph,6,temp,5</code> (both <code>,</code>) &mdash; names and values alternate.</li>
+                    </ul>
+                    <p>The <strong>Variable Name</strong> (max 10 characters) is used identically for:</p>
+                    <ul class="mb-3">
+                      <li><strong>Mavlink2Rest</strong> &mdash; <code>NAMED_VALUE_FLOAT</code> with this name. Appears in ArduPilot .BIN logs.</li>
+                      <li><strong>Cockpit WebSocket</strong> &mdash; <code>variable_name=value</code> to the data-lake.</li>
+                      <li><strong>CSV Log</strong> &mdash; column header in downloaded logs.</li>
+                    </ul>
+                    <p><strong>Examples:</strong></p>
+                    <table class="mono" style="border-collapse:collapse;margin-bottom:8px;">
+                      <tr style="color:#8b949e;"><td colspan="4" style="padding:2px 12px;"><em>Alternating pairs:</em> <code>ph,6,temp,5</code> &nbsp; Field Sep=<code>,</code> &nbsp; Name/Value Sep=<code>,</code></td></tr>
+                      <tr style="color:#8b949e;"><td style="padding:2px 12px;">Source Label</td><td style="padding:2px 12px;">Variable Name</td><td style="padding:2px 12px;">Mavlink</td><td style="padding:2px 12px;">Cockpit WS</td></tr>
+                      <tr><td style="padding:2px 12px;">ph</td><td style="padding:2px 12px;">ph</td><td style="padding:2px 12px;">ph=6.0</td><td style="padding:2px 12px;">ph=6</td></tr>
+                      <tr><td style="padding:2px 12px;">temp</td><td style="padding:2px 12px;">temp</td><td style="padding:2px 12px;">temp=5.0</td><td style="padding:2px 12px;">temp=5</td></tr>
+                    </table>
+                    <table class="mono" style="border-collapse:collapse;">
+                      <tr style="color:#8b949e;"><td colspan="4" style="padding:2px 12px;"><em>Key=Value:</em> <code>DO=8:salinity=34</code> &nbsp; Field Sep=<code>:</code> &nbsp; Name/Value Sep=<code>=</code></td></tr>
+                      <tr style="color:#8b949e;"><td style="padding:2px 12px;">Source Label</td><td style="padding:2px 12px;">Variable Name</td><td style="padding:2px 12px;">Mavlink</td><td style="padding:2px 12px;">Cockpit WS</td></tr>
+                      <tr><td style="padding:2px 12px;">DO</td><td style="padding:2px 12px;">DO</td><td style="padding:2px 12px;">DO=8.0</td><td style="padding:2px 12px;">DO=8</td></tr>
+                      <tr><td style="padding:2px 12px;">salinity</td><td style="padding:2px 12px;">salinity</td><td style="padding:2px 12px;">salinity=34.0</td><td style="padding:2px 12px;">salinity=34</td></tr>
+                    </table>
+                  </v-expansion-panel-content>
+                </v-expansion-panel>
+              </v-expansion-panels>
+            </v-tab-item>
+
+            <!-- ============================================================ -->
+            <!-- TAB 2: CONNECTION                                            -->
+            <!-- ============================================================ -->
+            <v-tab-item>
+              <v-row class="mt-4">
+                <!-- Serial port -->
+                <v-col cols="12" md="6">
+                  <v-card dark>
+                    <v-card-title class="subtitle-2"><v-icon left small>mdi-serial-port</v-icon> Serial Port</v-card-title>
+                    <v-card-text>
+                      <v-select v-model="selectedPort" :items="availablePorts" item-text="display" item-value="path"
+                        label="Port" :loading="portsLoading" prepend-icon="mdi-usb" outlined dense>
+                        <template v-slot:append-outer>
+                          <v-btn icon small @click="refreshPorts" :loading="portsLoading"><v-icon small>mdi-refresh</v-icon></v-btn>
+                        </template>
+                      </v-select>
+                      <v-select v-model="selectedBaud" :items="baudRates" label="Baud Rate" prepend-icon="mdi-speedometer" outlined dense></v-select>
+
+                      <div class="d-flex" style="gap: 8px;">
+                        <v-btn color="green" @click="connectSerial" :loading="connecting" :disabled="!selectedPort || status.serial_connected" class="flex-grow-1">
+                          <v-icon left>mdi-connection</v-icon> Connect
+                        </v-btn>
+                        <v-btn color="red" @click="disconnectSerial" :disabled="!status.serial_connected" class="flex-grow-1">
+                          <v-icon left>mdi-close-circle</v-icon> Disconnect
+                        </v-btn>
+                      </div>
+
+                      <v-divider class="my-4"></v-divider>
+
+                      <v-text-field v-model.number="cfg.poll_interval" label="Poll Interval (s)" prepend-icon="mdi-timer-outline"
+                        type="number" step="0.1" min="0.1" outlined dense></v-text-field>
+                      <v-text-field v-model="cfg.line_delimiter" label="Line Delimiter" prepend-icon="mdi-format-line-spacing"
+                        hint="\\n = newline, \\r\\n = CRLF" persistent-hint outlined dense></v-text-field>
+
+                      <v-btn color="primary" @click="saveConfig" :loading="saving" block class="mt-2">
+                        <v-icon left>mdi-content-save</v-icon> Save Settings
+                      </v-btn>
+                    </v-card-text>
+                  </v-card>
+                </v-col>
+
+                <!-- Output targets + status -->
+                <v-col cols="12" md="6">
+                  <v-card dark>
+                    <v-card-title class="subtitle-2"><v-icon left small>mdi-send</v-icon> Output Targets</v-card-title>
+                    <v-card-text>
+                      <v-switch v-model="cfg.send_mavlink" label="Mavlink2Rest (NAMED_VALUE_FLOAT)" color="green" dense hide-details class="mb-3"></v-switch>
+                      <v-alert v-if="cfg.send_mavlink" type="info" text dense class="mb-4">
+                        Numeric fields with <strong>MAV</strong> checked are sent as NAMED_VALUE_FLOAT.
+                        Variable name (max 10 chars) appears in ArduPilot .BIN logs.
+                      </v-alert>
+                      <v-switch v-model="cfg.send_cockpit" label="Cockpit WebSocket Data Lake" color="blue" dense hide-details class="mb-3"></v-switch>
+                      <v-alert v-if="cfg.send_cockpit" type="info" text dense>
+                        Fields with <strong>WS</strong> checked stream on port <code>8765</code>.
+                        In Cockpit: <em>Generic WebSocket Connection</em> &rarr; <code>ws://vehicle-ip:8765</code>.
+                      </v-alert>
+                      <v-btn color="primary" @click="saveConfig" :loading="saving" block class="mt-2">
+                        <v-icon left>mdi-content-save</v-icon> Save Output Settings
+                      </v-btn>
+                    </v-card-text>
+                  </v-card>
+
+                  <v-card dark class="mt-4">
+                    <v-card-title class="subtitle-2"><v-icon left small>mdi-information</v-icon> Status</v-card-title>
+                    <v-card-text>
+                      <v-list dense dark class="pa-0">
+                        <v-list-item dense>
+                          <v-list-item-icon class="mr-3">
+                            <v-icon small :color="status.serial_connected ? 'green' : 'red'">
+                              {{ status.serial_connected ? 'mdi-check-circle' : 'mdi-alert-circle' }}
+                            </v-icon>
+                          </v-list-item-icon>
+                          <v-list-item-content>
+                            <v-list-item-title class="body-2">Serial: {{ status.serial_connected ? 'Connected' : 'Disconnected' }}</v-list-item-title>
+                            <v-list-item-subtitle class="caption" v-if="status.serial_connected">{{ status.serial_port }} @ {{ status.baud_rate }}</v-list-item-subtitle>
+                          </v-list-item-content>
+                        </v-list-item>
+                        <v-list-item dense>
+                          <v-list-item-icon class="mr-3"><v-icon small color="blue">mdi-database</v-icon></v-list-item-icon>
+                          <v-list-item-content>
+                            <v-list-item-title class="body-2">Buffer: {{ status.buffer_size }} · Fields: {{ status.fields_count }}</v-list-item-title>
+                          </v-list-item-content>
+                        </v-list-item>
+                        <v-list-item dense>
+                          <v-list-item-icon class="mr-3"><v-icon small :color="status.ws_clients > 0 ? 'blue' : 'grey'">mdi-websocket</v-icon></v-list-item-icon>
+                          <v-list-item-content>
+                            <v-list-item-title class="body-2">WebSocket clients: {{ status.ws_clients }}</v-list-item-title>
+                          </v-list-item-content>
+                        </v-list-item>
+                      </v-list>
+                    </v-card-text>
+                  </v-card>
+                </v-col>
+              </v-row>
+            </v-tab-item>
+
+            <!-- ============================================================ -->
+            <!-- TAB 3: LOGS                                                  -->
+            <!-- ============================================================ -->
+            <v-tab-item>
+              <v-row class="mt-4">
+                <v-col cols="12" md="6">
+                  <v-card dark>
+                    <v-card-title class="subtitle-2"><v-icon left small>mdi-file-document</v-icon> Data Logs</v-card-title>
+                    <v-card-text>
+                      <p class="body-2 mb-4">All data is logged to CSV with your variable names as column headers. Auto-rotates at 10 MB.</p>
+                      <v-btn color="primary" @click="downloadLogs" class="mr-2">
+                        <v-icon left>mdi-download</v-icon> Download
+                      </v-btn>
+                      <v-btn color="red" @click="showDeleteDialog = true">
+                        <v-icon left>mdi-delete</v-icon> Delete All
+                      </v-btn>
+                    </v-card-text>
+                  </v-card>
+                </v-col>
+              </v-row>
+            </v-tab-item>
+          </v-tabs-items>
+        </v-container>
+      </v-main>
+
+      <!-- Delete dialog -->
+      <v-dialog v-model="showDeleteDialog" max-width="400">
+        <v-card dark>
+          <v-card-title>Delete Logs</v-card-title>
+          <v-card-text>Are you sure? This cannot be undone.</v-card-text>
+          <v-card-actions>
+            <v-spacer></v-spacer>
+            <v-btn text @click="showDeleteDialog = false">Cancel</v-btn>
+            <v-btn color="red" text @click="deleteLogs">Delete</v-btn>
+          </v-card-actions>
+        </v-card>
+      </v-dialog>
+
+      <v-snackbar v-model="snackbar.show" :color="snackbar.color" timeout="3000">
+        {{ snackbar.text }}
+        <template v-slot:action="{ attrs }">
+          <v-btn text v-bind="attrs" @click="snackbar.show = false">Close</v-btn>
+        </template>
+      </v-snackbar>
+    </v-app>
+  </div>
+
+  <script>
+    var MAX_NAME_LEN = 10;
+    var FIELD_COLORS = [
+      '#00e676', '#40c4ff', '#ffab40', '#ff5252', '#e040fb',
+      '#64ffda', '#ffd740', '#448aff', '#ff6e40', '#69f0ae',
+    ];
+
+    new Vue({
+      el: '#app',
+      vuetify: new Vuetify({ theme: { dark: true } }),
+      data: {
+        activeTab: 0,
+
+        // Config (mirrors backend state, minus is_connected)
+        cfg: {
+          serial_port: null,
+          baud_rate: 9600,
+          line_delimiter: '\\n',
+          field_separator: ',',
+          kv_separator: '',          // blank=positional, same as field_sep=alternating, different=key_value
+          fields: [],
+          send_mavlink: true,
+          send_cockpit: true,
+          poll_interval: 1.0,
+          raw_mode: false,
+        },
+
+        // Connection UI
+        selectedPort: null,
+        selectedBaud: 9600,
+        connecting: false,
+
+        // Status from /api/status
+        status: {
+          serial_connected: false,
+          serial_port: '',
+          baud_rate: 9600,
+          ws_clients: 0,
+          buffer_size: 0,
+          send_mavlink: true,
+          send_cockpit: true,
+          fields_count: 0,
+        },
+
+        availablePorts: [],
+        portsLoading: false,
+
+        // Separator detection
+        detectingSeperator: false,
+        sepDetectResult: null,
+
+        // UI
+        saving: false,
+        autoScroll: true,
+        consoleLines: [],
+        showDeleteDialog: false,
+        snackbar: { show: false, color: 'success', text: '' },
+        baudRates: [300, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600],
+
+        // Polling
+        statusTimer: null,
+        dataTimer: null,
+        lastDataLength: 0,
+        latestMeasurement: {},
+      },
+
+      computed: {
+        /** Derived parse mode from the two separator fields */
+        parseMode: function () {
+          var kv = (this.cfg.kv_separator || '').trim();
+          if (!kv) return 'positional';
+          if (kv === this.cfg.field_separator) return 'alternating';
+          return 'key_value';
+        },
+      },
+
+      methods: {
+
+        // ---- Colours ----
+
+        fieldColor: function (f) {
+          var idx = this.cfg.fields.indexOf(f);
+          return FIELD_COLORS[(idx >= 0 ? idx : 0) % FIELD_COLORS.length];
+        },
+
+        // ---- Live values ----
+
+        liveValue: function (f) {
+          var v = this.latestMeasurement[f.variable_name];
+          return v !== undefined && v !== null ? v : null;
+        },
+
+        // ---- Console highlighting ----
+
+        highlightLine: function (text) {
+          if (this.cfg.raw_mode || this.cfg.fields.length === 0) {
+            return '<span class="raw">' + this.esc(text) + '</span>';
+          }
+          var sep = this.cfg.field_separator;
+          var parts = text.split(sep);
+          var self = this;
+          var mode = this.parseMode;
+
+          if (mode === 'key_value') {
+            // source_key -> color
+            var keyColorMap = {};
+            this.cfg.fields.forEach(function (f, fi) {
+              if (f.source_key) keyColorMap[f.source_key.trim()] = FIELD_COLORS[fi % FIELD_COLORS.length];
+            });
+            var kvSep = this.cfg.kv_separator;
+            return parts.map(function (part) {
+              var eqIdx = part.indexOf(kvSep);
+              if (eqIdx >= 0) {
+                var label = part.substring(0, eqIdx).trim();
+                var c = keyColorMap[label];
+                if (c) return '<span class="field-span" style="background:' + c + '22;color:' + c + ';">' + self.esc(part) + '</span>';
+              }
+              return '<span class="raw">' + self.esc(part) + '</span>';
+            }).join('<span class="raw">' + self.esc(sep) + '</span>');
+          } else if (mode === 'alternating') {
+            // Alternating: name,value,name,value — highlight the name+value pair
+            var keyColorMap2 = {};
+            this.cfg.fields.forEach(function (f, fi) {
+              if (f.source_key) keyColorMap2[f.source_key.trim()] = FIELD_COLORS[fi % FIELD_COLORS.length];
+            });
+            var result = [];
+            for (var i = 0; i < parts.length; i++) {
+              if (i > 0) result.push('<span class="raw">' + self.esc(sep) + '</span>');
+              var label = parts[i].trim();
+              var c = keyColorMap2[label];
+              if (c && i + 1 < parts.length) {
+                // Highlight both name and value
+                result.push('<span class="field-span" style="background:' + c + '22;color:' + c + ';">' + self.esc(parts[i]) + '</span>');
+                result.push('<span class="raw">' + self.esc(sep) + '</span>');
+                i++;
+                result.push('<span class="field-span" style="background:' + c + '22;color:' + c + ';">' + self.esc(parts[i]) + '</span>');
+              } else {
+                result.push('<span class="raw">' + self.esc(parts[i]) + '</span>');
+              }
+            }
+            return result.join('');
+          } else {
+            // Positional
+            var colorMap = {};
+            this.cfg.fields.forEach(function (f, fi) {
+              colorMap[f.index] = FIELD_COLORS[fi % FIELD_COLORS.length];
+            });
+            return parts.map(function (part, i) {
+              var c = colorMap[i];
+              if (c) return '<span class="field-span" style="background:' + c + '22;color:' + c + ';">' + self.esc(part) + '</span>';
+              return '<span class="raw">' + self.esc(part) + '</span>';
+            }).join('<span class="raw">' + self.esc(sep) + '</span>');
+          }
+        },
+
+        esc: function (s) {
+          var d = document.createElement('div');
+          d.textContent = s;
+          return d.innerHTML;
+        },
+
+        // ---- Config ----
+
+        loadConfig: function () {
+          var self = this;
+          axios.get('/api/config').then(function (r) {
+            for (var k in r.data) {
+              if (k in self.cfg && k !== 'is_connected') {
+                if (k === 'fields') {
+                  self.$set(self.cfg, 'fields', r.data.fields || []);
+                } else {
+                  self.cfg[k] = r.data[k];
+                }
+              }
+            }
+            // Sync connection UI
+            if (r.data.serial_port) self.selectedPort = r.data.serial_port;
+            if (r.data.baud_rate) self.selectedBaud = r.data.baud_rate;
+          }).catch(function (e) { console.error('Config load error', e); });
+        },
+
+        saveConfig: function () {
+          var self = this;
+          self.saving = true;
+          axios.post('/api/config', self.cfg).then(function (r) {
+            if (r.data.success) {
+              self.notify('success', 'Configuration saved');
+              for (var k in r.data.config) {
+                if (k in self.cfg && k !== 'is_connected') {
+                  if (k === 'fields') {
+                    self.$set(self.cfg, 'fields', r.data.config.fields || []);
+                  } else {
+                    self.cfg[k] = r.data.config[k];
+                  }
+                }
+              }
+            } else {
+              self.notify('error', r.data.message || 'Save failed');
+            }
+          }).catch(function () {
+            self.notify('error', 'Error saving config');
+          }).finally(function () { self.saving = false; });
+        },
+
+        // ---- Serial connect / disconnect ----
+
+        refreshPorts: function () {
+          var self = this;
+          self.portsLoading = true;
+          axios.get('/api/serial/ports').then(function (r) {
+            if (r.data && Array.isArray(r.data.ports)) {
+              self.availablePorts = r.data.ports.map(function (p) {
+                return Object.assign({}, p, { display: p.path + ' (' + p.name + ')' });
+              });
+            }
+          }).catch(function () {
+            self.notify('error', 'Failed to list serial ports');
+          }).finally(function () { self.portsLoading = false; });
+        },
+
+        connectSerial: function () {
+          var self = this;
+          if (!self.selectedPort) return;
+          self.connecting = true;
+          axios.post('/api/serial/connect', {
+            port: self.selectedPort,
+            baud_rate: self.selectedBaud,
+          }).then(function (r) {
+            if (r.data.success) {
+              self.notify('success', r.data.message);
+              self.pollStatus();
+            } else {
+              self.notify('error', r.data.message);
+            }
+          }).catch(function () {
+            self.notify('error', 'Connection error');
+          }).finally(function () { self.connecting = false; });
+        },
+
+        disconnectSerial: function () {
+          var self = this;
+          axios.post('/api/serial/disconnect').then(function (r) {
+            if (r.data.success) {
+              self.notify('info', 'Disconnected');
+              self.pollStatus();
+            }
+          }).catch(function () {
+            self.notify('error', 'Disconnect error');
+          });
+        },
+
+        // ---- Separator detection ----
+
+        detectSeparator: function () {
+          var self = this;
+          self.detectingSeperator = true;
+          self.sepDetectResult = null;
+          axios.get('/api/detect_separator').then(function (r) {
+            self.sepDetectResult = r.data;
+            if (r.data.success) {
+              self.cfg.field_separator = r.data.field_separator;
+              self.cfg.kv_separator = r.data.kv_separator || '';
+              var pat = r.data.pattern;
+              if (pat === 'alternating') {
+                self.notify('success', 'Detected alternating name/value pairs with ' + r.data.field_separator_display);
+              } else if (pat === 'key_value') {
+                self.notify('success', 'Detected key' + r.data.kv_separator + 'value format with field separator ' + r.data.field_separator_display);
+              } else {
+                self.notify('success', 'Separator set to ' + r.data.field_separator_display + ' (positional)');
+              }
+            } else {
+              self.notify('warning', r.data.message || 'Could not detect separator');
+            }
+          }).catch(function () {
+            self.notify('error', 'Separator detection failed');
+          }).finally(function () { self.detectingSeperator = false; });
+        },
+
+        // ---- Polling ----
+
+        pollStatus: function () {
+          var self = this;
+          axios.get('/api/status').then(function (r) { self.status = r.data; }).catch(function () {});
+        },
+
+        pollData: function () {
+          var self = this;
+          axios.get('/api/data?limit=200').then(function (r) {
+            var items = r.data || [];
+            if (items.length > self.lastDataLength) {
+              var newItems = items.slice(self.lastDataLength);
+              for (var i = 0; i < newItems.length; i++) {
+                var item = newItems[i];
+                var ts = item.timestamp ? new Date(item.timestamp).toLocaleTimeString() : '';
+                self.consoleLines.push({ ts: ts, text: item.raw_line || JSON.stringify(item) });
+                self.latestMeasurement = item;
+              }
+              if (self.consoleLines.length > 500) {
+                self.consoleLines = self.consoleLines.slice(-500);
+              }
+              self.lastDataLength = items.length;
+              if (self.autoScroll) {
+                self.$nextTick(function () {
+                  var el = self.$refs.console;
+                  if (el) el.scrollTop = el.scrollHeight;
+                });
+              }
+            }
+          }).catch(function () {});
+        },
+
+        clearConsole: function () {
+          this.consoleLines = [];
+        },
+
+        // ---- Field management ----
+
+        enforceNameLimit: function (fi) {
+          var f = this.cfg.fields[fi];
+          if (f.variable_name.length > MAX_NAME_LEN) {
+            this.$set(this.cfg.fields[fi], 'variable_name', f.variable_name.substring(0, MAX_NAME_LEN));
+          }
+        },
+
+        onTypeChange: function (f) {
+          // If changed to string, disable mavlink
+          if (f.type === 'string') {
+            f.send_mavlink = false;
+          }
+        },
+
+        addField: function () {
+          var nextIndex = this.cfg.fields.length > 0
+            ? Math.max.apply(null, this.cfg.fields.map(function (f) { return f.index; })) + 1
+            : 0;
+          var name = ('field' + nextIndex).substring(0, MAX_NAME_LEN);
+          this.cfg.fields.push({
+            index: nextIndex,
+            source_key: '',
+            variable_name: name,
+            type: 'number',
+            send_mavlink: true,
+            send_cockpit: true,
+          });
+        },
+
+        removeField: function (fi) {
+          this.cfg.fields.splice(fi, 1);
+        },
+
+        autoDetectFields: function () {
+          if (this.consoleLines.length === 0) return;
+          var lastLine = this.consoleLines[this.consoleLines.length - 1].text;
+          var sep = this.cfg.field_separator;
+          var parts = lastLine.split(sep);
+          var self = this;
+          var mode = this.parseMode;
+          var kvSep = (this.cfg.kv_separator || '').trim();
+          var fields = [];
+
+          if (mode === 'key_value') {
+            // key=value within each chunk
+            parts.forEach(function (part, i) {
+              var eqIdx = part.indexOf(kvSep);
+              if (eqIdx >= 0) {
+                var label = part.substring(0, eqIdx).trim();
+                var rawVal = part.substring(eqIdx + kvSep.length).trim();
+                var isNum = rawVal !== '' && !isNaN(Number(rawVal));
+                fields.push({
+                  index: i, source_key: label,
+                  variable_name: label.substring(0, MAX_NAME_LEN),
+                  type: isNum ? 'number' : 'string',
+                  send_mavlink: isNum, send_cockpit: true,
+                });
+              }
+            });
+          } else if (mode === 'alternating') {
+            // name,value,name,value,...
+            for (var i = 0; i + 1 < parts.length; i += 2) {
+              var label = parts[i].trim();
+              var rawVal = parts[i + 1].trim();
+              var isNum = rawVal !== '' && !isNaN(Number(rawVal));
+              fields.push({
+                index: i, source_key: label,
+                variable_name: label.substring(0, MAX_NAME_LEN),
+                type: isNum ? 'number' : 'string',
+                send_mavlink: isNum, send_cockpit: true,
+              });
+            }
+          } else {
+            // Positional
+            fields = parts.map(function (part, i) {
+              var trimmed = part.trim();
+              var isNum = trimmed !== '' && !isNaN(Number(trimmed));
+              return {
+                index: i, source_key: '',
+                variable_name: ('field' + i).substring(0, MAX_NAME_LEN),
+                type: isNum ? 'number' : 'string',
+                send_mavlink: isNum, send_cockpit: true,
+              };
+            });
+          }
+
+          self.$set(self.cfg, 'fields', fields);
+          self.notify('info', 'Detected ' + fields.length + ' fields (' + mode + '). Adjust names (max 10 chars) and click Apply & Save.');
+        },
+
+        // ---- Logs ----
+
+        downloadLogs: function () {
+          window.location.href = '/api/logs';
+        },
+
+        deleteLogs: function () {
+          var self = this;
+          self.showDeleteDialog = false;
+          axios.post('/api/logs/delete').then(function (r) {
+            self.notify(r.data.success ? 'success' : 'error', r.data.message);
+          }).catch(function () {
+            self.notify('error', 'Error deleting logs');
+          });
+        },
+
+        // ---- Helpers ----
+
+        notify: function (color, text) {
+          this.snackbar = { show: true, color: color, text: text };
+        },
+      },
+
+      mounted: function () {
+        this.loadConfig();
+        this.refreshPorts();
+        this.pollStatus();
+        this.pollData();
+        this.statusTimer = setInterval(this.pollStatus, 3000);
+        this.dataTimer = setInterval(this.pollData, 1000);
+      },
+
+      beforeDestroy: function () {
+        if (this.statusTimer) clearInterval(this.statusTimer);
+        if (this.dataTimer) clearInterval(this.dataTimer);
+      },
+    });
+  </script>
+</body>
+</html>

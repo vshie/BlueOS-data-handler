@@ -1,0 +1,9 @@
+{
+  "name": "BlueOS Data Handler",
+  "description": "Read serial data from USB devices and forward to Mavlink2Rest / Cockpit WebSocket",
+  "icon": "mdi-swap-horizontal-bold",
+  "company": "Blue Robotics",
+  "version": "1.0.0",
+  "webpage": "",
+  "api": ""
+}
