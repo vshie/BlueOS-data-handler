@@ -35,6 +35,7 @@ EXPOSE 8765/tcp
 
 LABEL version="1.0.0"
 
+
 LABEL permissions='\
 {\
   "ExposedPorts": {\
