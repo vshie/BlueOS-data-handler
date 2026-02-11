@@ -442,8 +442,6 @@
 
                       <v-divider class="my-4"></v-divider>
 
-                      <v-text-field v-model.number="cfg.poll_interval" label="Poll Interval (s)" prepend-icon="mdi-timer-outline"
-                        type="number" step="0.1" min="0.1" outlined dense></v-text-field>
                       <v-text-field v-model="cfg.line_delimiter" label="Line Delimiter" prepend-icon="mdi-format-line-spacing"
                         hint="\\n = newline, \\r\\n = CRLF" persistent-hint outlined dense></v-text-field>
 
@@ -579,7 +577,6 @@
           fields: [],
           send_mavlink: true,
           send_cockpit: true,
-          poll_interval: 1.0,
           raw_mode: false,
         },
 

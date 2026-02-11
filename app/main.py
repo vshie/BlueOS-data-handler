@@ -110,7 +110,6 @@ state = {
     "fields": [],
     "send_mavlink": True,
     "send_cockpit": True,
-    "poll_interval": 1.0,
     "raw_mode": False,
 }
 
@@ -145,6 +144,7 @@ def load_state():
 
             # Strip removed keys from earlier versions
             saved.pop("parse_mode", None)
+            saved.pop("poll_interval", None)
 
             for k, v in saved.items():
                 if k in state:
@@ -365,7 +365,6 @@ class SerialHandler:
                 time.sleep(1)
                 continue
 
-            start = time.time()
             try:
                 raw = b""
                 with self.lock:
@@ -389,9 +388,9 @@ class SerialHandler:
                 time.sleep(1)
                 continue
 
-            elapsed = time.time() - start
-            sleep_time = max(0, state["poll_interval"] - elapsed)
-            time.sleep(sleep_time)
+            # Process data immediately when it arrives; only sleep when idle to avoid busy-loop
+            if not raw:
+                time.sleep(0.01)
 
     def _process_line(self, line):
         """Parse a single line and dispatch to outputs."""
@@ -799,6 +798,9 @@ def api_update_config():
     # Normalise kv_separator: null/None → empty string
     if "kv_separator" in new and new["kv_separator"] is None:
         new["kv_separator"] = ""
+
+    # Strip removed/legacy keys
+    new.pop("poll_interval", None)
 
     # Merge (but don't let the frontend set is_connected)
     for k, v in new.items():
