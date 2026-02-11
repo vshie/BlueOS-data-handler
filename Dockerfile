@@ -29,8 +29,8 @@ RUN pip install --no-cache-dir flask==2.0.1 && \
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 
-# Flask on port 80, WebSocket on port 8765
-EXPOSE 80/tcp
+# Flask on port 8666, WebSocket on port 8765
+EXPOSE 8666/tcp
 EXPOSE 8765/tcp
 
 LABEL version="1.0.0"
@@ -39,7 +39,7 @@ LABEL version="1.0.0"
 LABEL permissions='\
 {\
   "ExposedPorts": {\
-    "80/tcp": {},\
+    "8666/tcp": {},\
     "8765/tcp": {}\
   },\
   "HostConfig": {\
@@ -56,9 +56,9 @@ LABEL permissions='\
     ],\
     "ExtraHosts": ["host.docker.internal:host-gateway"],\
     "PortBindings": {\
-      "80/tcp": [\
+      "8666/tcp": [\
         {\
-          "HostPort": ""\
+          "HostPort": "8666"\
         }\
       ],\
       "8765/tcp": [\

@@ -852,10 +852,26 @@ if __name__ == "__main__":
     ws_thread.start()
 
     # Flask (use waitress in production, fall back to built-in for dev)
-    try:
-        from waitress import serve as waitress_serve
-        app_logger.info("Starting with waitress on port 80")
-        waitress_serve(app, host="0.0.0.0", port=80)
-    except ImportError:
-        app_logger.info("waitress not available, using Flask dev server on port 80")
-        app.run(host="0.0.0.0", port=80)
+    # Retry binding in case the previous container hasn't fully released the port yet.
+    MAX_RETRIES = 6
+    RETRY_DELAY = 5  # seconds between retries
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            try:
+                from waitress import serve as waitress_serve
+                app_logger.info(f"Starting with waitress on port 8666 (attempt {attempt}/{MAX_RETRIES})")
+                waitress_serve(app, host="0.0.0.0", port=8666)
+            except ImportError:
+                app_logger.info(f"waitress not available, using Flask dev server on port 8666 (attempt {attempt}/{MAX_RETRIES})")
+                app.run(host="0.0.0.0", port=8666)
+            break  # server exited normally
+        except OSError as e:
+            if e.errno == 98 and attempt < MAX_RETRIES:
+                app_logger.warning(
+                    f"Port 8080 already in use, retrying in {RETRY_DELAY}s "
+                    f"({attempt}/{MAX_RETRIES})…"
+                )
+                time.sleep(RETRY_DELAY)
+            else:
+                raise

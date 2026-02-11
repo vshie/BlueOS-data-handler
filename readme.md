@@ -14,7 +14,7 @@ Settings:
 ```json
 {
   "ExposedPorts": {
-    "80/tcp": {},
+    "8666/tcp": {},
     "8765/tcp": {}
   },
   "HostConfig": {
@@ -31,9 +31,9 @@ Settings:
     ],
     "ExtraHosts": ["host.docker.internal:host-gateway"],
     "PortBindings": {
-      "80/tcp": [
+      "8666/tcp": [
         {
-          "HostPort": ""
+          "HostPort": "8666"
         }
       ],
       "8765/tcp": [
@@ -54,7 +54,7 @@ Settings:
 
 ### Web UI
 
-- **URL:** Open the extension from the BlueOS extensions page, or go to the host’s port **80** (e.g. `http://blueos.local` or the IP of the BlueOS device).
+- **URL:** Open the extension from the BlueOS extensions page, or go to port **8666** on the host (e.g. `http://blueos.local:8666`).
 - **Port 8765** is used for the **Cockpit WebSocket**; Cockpit connects to `ws://<host>:8765` to receive `variable_name=value` updates.
 
 ### Tabs
