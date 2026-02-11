@@ -171,6 +171,35 @@ def save_state():
 
 
 # ---------------------------------------------------------------------------
+# USB port grid mapping (NMEA-handler style)
+# Maps Linux USB location (e.g. "1-1.2") to grid cell id (e.g. "2.0 #2")
+# Pi 4: 1-1.x = USB 2.0, 2-1.x = USB 3.0
+# ---------------------------------------------------------------------------
+
+def _location_to_usb_port(location):
+    """Return {bus, hub_info} for grid highlighting. bus = grid cell id for NMEA-style grid."""
+    if not location:
+        return None
+    # Pi 4: 1-1.1, 1-1.2 = USB 2.0; 2-1.1, 2-1.2 = USB 3.0 (or 1-1.3, 1-1.4)
+    parts = [p for p in location.replace("-", ".").split(".") if p]
+    try:
+        if len(parts) >= 3:
+            bus_num = int(parts[0])
+            port_num = int(parts[-1])  # last segment = port index
+            if bus_num == 1:
+                if port_num <= 2:
+                    return {"bus": f"2.0 #{port_num}", "hub_info": location}
+                return {"bus": f"3.0 #{min(port_num - 2, 3)}", "hub_info": location}
+            elif bus_num == 2:
+                return {"bus": f"3.0 #{min(port_num, 3)}", "hub_info": location}
+        elif len(parts) >= 2:
+            return {"bus": f"2.0 #{min(int(parts[-1]), 2)}", "hub_info": location}
+    except (ValueError, IndexError):
+        pass
+    return {"bus": location, "hub_info": location}
+
+
+# ---------------------------------------------------------------------------
 # Serial handler (modelled on NMEA-handler)
 # ---------------------------------------------------------------------------
 
@@ -184,35 +213,74 @@ class SerialHandler:
     # -- Port discovery --
 
     def get_ports(self):
-        """List available serial ports, checking well-known paths + pyserial."""
+        """List available serial ports with physical location, using pyserial + by-id.
+        Same approach as NMEA-handler: pyserial gives location/hwid, by-id gives stable names."""
         ports = []
         seen = set()
 
-        # Check common USB / ACM / AMA paths
-        for pattern_base, count in [("/dev/ttyUSB", 4), ("/dev/ttyACM", 4), ("/dev/ttyAMA", 4)]:
-            for i in range(count):
-                p = f"{pattern_base}{i}"
-                if Path(p).exists() and p not in seen:
-                    ports.append({"path": p, "name": os.path.basename(p)})
-                    seen.add(p)
-
-        # Also check /dev/serial/by-id for descriptive names
-        by_id = Path("/dev/serial/by-id")
-        if by_id.exists():
-            for link in by_id.iterdir():
-                resolved = str(link.resolve())
-                if resolved not in seen:
-                    ports.append({"path": resolved, "name": link.name})
-                    seen.add(resolved)
-
-        # Pyserial fallback
+        # Primary: pyserial list_ports (includes location, description, hwid)
         try:
-            for port_info in serial.tools.list_ports.comports():
-                if port_info.device not in seen:
-                    ports.append({"path": port_info.device, "name": port_info.description or port_info.device})
-                    seen.add(port_info.device)
+            for port_info in serial.tools.list_ports.comports(include_links=True):
+                path = port_info.device
+                if path in seen:
+                    continue
+                seen.add(path)
+
+                # Human-readable name: prefer description, else by-id basename, else device name
+                name = port_info.description or os.path.basename(path)
+                if not name or name == os.path.basename(path):
+                    # Try by-id for a more descriptive name
+                    by_id = Path("/dev/serial/by-id")
+                    if by_id.exists():
+                        for link in by_id.iterdir():
+                            try:
+                                if str(link.resolve()) == path:
+                                    name = link.name
+                                    break
+                            except OSError:
+                                pass
+
+                # Physical location (USB port hierarchy, e.g. "1-1.2")
+                location = getattr(port_info, "location", None) or ""
+
+                # Human-readable location label (e.g. "USB 1-1.2")
+                location_display = f"USB {location}" if location else ""
+
+                # usb_port for grid highlighting (bus = grid cell id, hub_info = raw location)
+                usb_port = _location_to_usb_port(location)
+
+                ports.append({
+                    "path": path,
+                    "name": name,
+                    "device": os.path.basename(path),
+                    "display_name": name,
+                    "location": location,
+                    "location_display": location_display,
+                    "usb_port": usb_port,
+                })
         except Exception as e:
             app_logger.error(f"pyserial list_ports error: {e}")
+
+        # Fallback: by-id if pyserial returned nothing
+        if not ports:
+            by_id = Path("/dev/serial/by-id")
+            if by_id.exists():
+                for link in by_id.iterdir():
+                    try:
+                        resolved = str(link.resolve())
+                        if resolved not in seen:
+                            ports.append({
+                                "path": resolved,
+                                "name": link.name,
+                                "device": os.path.basename(resolved),
+                                "display_name": link.name,
+                                "location": "",
+                                "location_display": "",
+                                "usb_port": None,
+                            })
+                            seen.add(resolved)
+                    except OSError:
+                        pass
 
         ports.sort(key=lambda x: x["path"])
         return ports

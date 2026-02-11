@@ -50,6 +50,29 @@
 
     /* Name input red border when at limit */
     .name-at-limit .v-input__slot { border-color: #ff9800 !important; }
+
+    /* Device identification + USB port grid (NMEA-handler style) */
+    .device-id-table th { font-size: 11px !important; font-weight: 500; color: #8b949e; }
+    .device-id-table td { font-size: 12px; }
+    .device-id-table code { background: #21262d; padding: 2px 6px; border-radius: 3px; font-size: 11px; }
+    .device-id-table .hub-info { display: block; font-size: 10px; color: #484f58; }
+    .device-row { cursor: pointer; transition: background-color 0.15s; }
+    .device-row:hover,
+    .device-row.device-row-highlight { background-color: rgba(33, 150, 243, 0.15) !important; }
+    .usb-port-visual { flex-shrink: 0; }
+    .usb-port-grid { border: 2px solid #30363d; border-radius: 4px; overflow: hidden; width: 80px; }
+    .usb-port-row { display: flex; }
+    .usb-port-cell {
+      width: 40px; height: 32px; display: flex; align-items: center; justify-content: center;
+      border: 1px solid #21262d; transition: all 0.15s ease;
+    }
+    .usb-port-cell.usb2 { background-color: rgba(255, 152, 0, 0.2); }
+    .usb-port-cell.usb3 { background-color: rgba(33, 150, 243, 0.2); }
+    .usb-port-cell.highlighted { transform: scale(1.05); z-index: 1; box-shadow: 0 0 8px rgba(33, 150, 243, 0.8); }
+    .usb-port-cell.usb2.highlighted { background-color: #ff9800; }
+    .usb-port-cell.usb3.highlighted { background-color: #2196f3; }
+    .usb-port-cell .port-type { font-size: 10px; font-weight: 500; color: #8b949e; }
+    .usb-port-cell.highlighted .port-type { color: white; }
   </style>
 </head>
 <body>
@@ -316,15 +339,94 @@
             <!-- ============================================================ -->
             <v-tab-item>
               <v-row class="mt-4">
-                <!-- Serial port -->
+                <!-- Device Identification + USB Port Grid (NMEA-handler style) -->
+                <v-col cols="12">
+                  <v-card dark>
+                    <v-card-title class="subtitle-2">
+                      <v-icon left small>mdi-usb</v-icon> Device Identification
+                      <v-spacer></v-spacer>
+                      <v-btn icon x-small @click="refreshPorts" :loading="portsLoading"><v-icon small>mdi-refresh</v-icon></v-btn>
+                    </v-card-title>
+                    <v-card-text>
+                      <div class="d-flex align-start" style="gap: 24px; flex-wrap: wrap;">
+                        <!-- USB Port Visual Grid -->
+                        <div class="usb-port-visual">
+                          <div class="usb-port-grid">
+                            <div class="usb-port-row">
+                              <div class="usb-port-cell usb2" :class="{ highlighted: hoveredUsbPosition === '2.0 #1' }"
+                                @mouseenter="hoveredUsbPosition = '2.0 #1'" @mouseleave="hoveredUsbPosition = null">
+                                <span class="port-type">2.0</span>
+                              </div>
+                              <div class="usb-port-cell usb2" :class="{ highlighted: hoveredUsbPosition === '2.0 #2' }"
+                                @mouseenter="hoveredUsbPosition = '2.0 #2'" @mouseleave="hoveredUsbPosition = null">
+                                <span class="port-type">2.0</span>
+                              </div>
+                            </div>
+                            <div class="usb-port-row">
+                              <div class="usb-port-cell usb3" :class="{ highlighted: hoveredUsbPosition === '3.0 #1' }"
+                                @mouseenter="hoveredUsbPosition = '3.0 #1'" @mouseleave="hoveredUsbPosition = null">
+                                <span class="port-type">3.0</span>
+                              </div>
+                              <div class="usb-port-cell usb3" :class="{ highlighted: hoveredUsbPosition === '3.0 #2' }"
+                                @mouseenter="hoveredUsbPosition = '3.0 #2'" @mouseleave="hoveredUsbPosition = null">
+                                <span class="port-type">3.0</span>
+                              </div>
+                            </div>
+                            <div class="usb-port-row">
+                              <div class="usb-port-cell usb3" :class="{ highlighted: hoveredUsbPosition === '3.0 #3' }"
+                                @mouseenter="hoveredUsbPosition = '3.0 #3'" @mouseleave="hoveredUsbPosition = null">
+                                <span class="port-type">3.0</span>
+                              </div>
+                              <div class="usb-port-cell" style="background:#30363d; color:#8b949e; font-size:12px;">
+                                ETH →
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <!-- Device table -->
+                        <div class="flex-grow-1" style="min-width: 280px;">
+                          <table class="device-id-table" style="width:100%; border-collapse: collapse;">
+                            <thead>
+                              <tr><th style="text-align:left; padding:4px 8px;">Port</th><th style="text-align:left; padding:4px 8px;">Device</th><th style="text-align:left; padding:4px 8px;">USB Path</th></tr>
+                            </thead>
+                            <tbody>
+                              <tr v-for="item in deviceIds" :key="item.path"
+                                class="device-row"
+                                :class="{ 'device-row-highlight': hoveredUsbPosition && item.usb_port && item.usb_port.bus === hoveredUsbPosition }"
+                                @mouseenter="hoveredUsbPosition = item.usb_port ? item.usb_port.bus : null"
+                                @mouseleave="hoveredUsbPosition = null"
+                                @click="selectedPort = item.path">
+                                <td style="padding:6px 8px;"><code>{{ item.device }}</code></td>
+                                <td style="padding:6px 8px;">{{ item.display_name }}</td>
+                                <td style="padding:6px 8px;">
+                                  <span v-if="item.usb_port">{{ item.usb_port.bus }}<span class="hub-info">({{ item.usb_port.hub_info }})</span></span>
+                                  <span v-else class="hub-info">—</span>
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+                          <p v-if="deviceIds.length === 0" class="caption mt-2" style="color:#8b949e;">No serial devices detected. Click refresh or plug in a device.</p>
+                        </div>
+                      </div>
+                    </v-card-text>
+                  </v-card>
+                </v-col>
+
+                <!-- Serial port + Connect -->
                 <v-col cols="12" md="6">
                   <v-card dark>
                     <v-card-title class="subtitle-2"><v-icon left small>mdi-serial-port</v-icon> Serial Port</v-card-title>
                     <v-card-text>
                       <v-select v-model="selectedPort" :items="availablePorts" item-text="display" item-value="path"
-                        label="Port" :loading="portsLoading" prepend-icon="mdi-usb" outlined dense>
-                        <template v-slot:append-outer>
-                          <v-btn icon small @click="refreshPorts" :loading="portsLoading"><v-icon small>mdi-refresh</v-icon></v-btn>
+                        label="Port" :loading="portsLoading" prepend-icon="mdi-usb" outlined dense
+                        @focus="refreshPorts" cache-items>
+                        <template v-slot:item="{ item }">
+                          <v-list-item-content>
+                            <v-list-item-title>{{ item.path }}</v-list-item-title>
+                            <v-list-item-subtitle v-if="item.location_display">{{ item.name }} · {{ item.location_display }}</v-list-item-subtitle>
+                            <v-list-item-subtitle v-else>{{ item.name }}</v-list-item-subtitle>
+                          </v-list-item-content>
                         </template>
                       </v-select>
                       <v-select v-model="selectedBaud" :items="baudRates" label="Baud Rate" prepend-icon="mdi-speedometer" outlined dense></v-select>
@@ -485,6 +587,7 @@
         selectedPort: null,
         selectedBaud: 9600,
         connecting: false,
+        hoveredUsbPosition: null,
 
         // Status from /api/status
         status: {
@@ -527,6 +630,10 @@
           if (!kv) return 'positional';
           if (kv === this.cfg.field_separator) return 'alternating';
           return 'key_value';
+        },
+        /** Device list for table (same as availablePorts, NMEA-handler naming) */
+        deviceIds: function () {
+          return this.availablePorts;
         },
       },
 
@@ -666,7 +773,8 @@
           axios.get('/api/serial/ports').then(function (r) {
             if (r.data && Array.isArray(r.data.ports)) {
               self.availablePorts = r.data.ports.map(function (p) {
-                return Object.assign({}, p, { display: p.path + ' (' + p.name + ')' });
+                var loc = p.location_display ? ' · ' + p.location_display : '';
+                return Object.assign({}, p, { display: p.path + ' (' + p.name + ')' + loc });
               });
             }
           }).catch(function () {
