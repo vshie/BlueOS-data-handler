@@ -177,21 +177,21 @@ def save_state():
 # ---------------------------------------------------------------------------
 
 def _location_to_usb_port(location):
-    """Return {bus, hub_info} for grid highlighting. bus = grid cell id for NMEA-style grid."""
+    """Return {bus, hub_info} for grid highlighting. bus = grid cell id (2x2 USB + ETH)."""
     if not location:
         return None
-    # Pi 4: 1-1.1, 1-1.2 = USB 2.0; 2-1.1, 2-1.2 = USB 3.0 (or 1-1.3, 1-1.4)
+    # Pi 4: 2x2 layout - 2.0 #1, 2.0 #2 (top), 3.0 #1, 3.0 #2 (bottom), ETH
     parts = [p for p in location.replace("-", ".").split(".") if p]
     try:
         if len(parts) >= 3:
             bus_num = int(parts[0])
-            port_num = int(parts[-1])  # last segment = port index
+            port_num = int(parts[-1])
             if bus_num == 1:
                 if port_num <= 2:
                     return {"bus": f"2.0 #{port_num}", "hub_info": location}
-                return {"bus": f"3.0 #{min(port_num - 2, 3)}", "hub_info": location}
+                return {"bus": f"3.0 #{min(port_num - 2, 2)}", "hub_info": location}
             elif bus_num == 2:
-                return {"bus": f"3.0 #{min(port_num, 3)}", "hub_info": location}
+                return {"bus": f"3.0 #{min(port_num, 2)}", "hub_info": location}
         elif len(parts) >= 2:
             return {"bus": f"2.0 #{min(int(parts[-1]), 2)}", "hub_info": location}
     except (ValueError, IndexError):
@@ -229,6 +229,11 @@ class SerialHandler:
                     continue  # Only USB-serial (ttyUSB*); exclude serial*, ttyACM*, ttyAMA*
                 seen.add(path)
 
+                # Physical location (USB port hierarchy, e.g. "1-1.2")
+                location = getattr(port_info, "location", None) or ""
+                if not location:
+                    continue  # Only list devices that are actually connected (have USB path)
+
                 # Human-readable name: prefer description, else by-id basename, else device name
                 name = port_info.description or os.path.basename(path)
                 if not name or name == os.path.basename(path):
@@ -242,9 +247,6 @@ class SerialHandler:
                                     break
                             except OSError:
                                 pass
-
-                # Physical location (USB port hierarchy, e.g. "1-1.2")
-                location = getattr(port_info, "location", None) or ""
 
                 # Human-readable location label (e.g. "USB 1-1.2")
                 location_display = f"USB {location}" if location else ""
