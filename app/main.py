@@ -219,11 +219,14 @@ class SerialHandler:
         seen = set()
 
         # Primary: pyserial list_ports (includes location, description, hwid)
+        # Only include ttyUSB* (USB-serial adapters); exclude serial*, ttyACM*, ttyAMA*
         try:
             for port_info in serial.tools.list_ports.comports(include_links=True):
                 path = port_info.device
                 if path in seen:
                     continue
+                if "ttyUSB" not in path:
+                    continue  # Only USB-serial (ttyUSB*); exclude serial*, ttyACM*, ttyAMA*
                 seen.add(path)
 
                 # Human-readable name: prefer description, else by-id basename, else device name
@@ -261,14 +264,14 @@ class SerialHandler:
         except Exception as e:
             app_logger.error(f"pyserial list_ports error: {e}")
 
-        # Fallback: by-id if pyserial returned nothing
+        # Fallback: by-id if pyserial returned nothing (only ttyUSB*)
         if not ports:
             by_id = Path("/dev/serial/by-id")
             if by_id.exists():
                 for link in by_id.iterdir():
                     try:
                         resolved = str(link.resolve())
-                        if resolved not in seen:
+                        if resolved not in seen and "ttyUSB" in resolved:
                             ports.append({
                                 "path": resolved,
                                 "name": link.name,
